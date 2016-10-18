@@ -1,0 +1,190 @@
+---
+title:  "Practical Machine Learning Course Project"
+author: "Jarrett Meyer"
+date:   "10/18/2016"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r initialize_document, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+rm(list = ls())
+library(dplyr)
+library(caret)
+library(randomForest)
+set.seed(13579) # for reproducibility
+```
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+```{r getting_data}
+dat.training.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+dat.testing.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+dat.training.path <- "./data/pml-training.csv"
+dat.testing.path <- "./data/pml-testing.csv"
+if (!dir.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(dat.training.path)) {
+  download.file(dat.training.url, dat.training.path)
+}
+if (!file.exists(dat.testing.path)) {
+  download.file(dat.testing.url, dat.testing.path)
+}
+```
+
+Load the data and save the dimensions.
+
+```{r load_data}
+dat.training.frame <- read.csv(dat.training.path, stringsAsFactors = FALSE)
+dat.training.dim <- dim(dat.training.frame)
+dat.testing.frame <- read.csv(dat.testing.path, stringsAsFactors = FALSE)
+dat.testing.dim <- dim(dat.testing.frame)
+```
+
+The training data consists of `r dat.training.dim[1]` observations of `r dat.training.dim[2]` variables.
+
+The testing data consists of `r dat.testing.dim[1]` observations of `r dat.testing.dim[2]` variables. The `classe` column is missing from the test data set, and an additional `problem_id` column has been added.
+
+```{r classification}
+table(dat.training.frame$classe)
+```
+
+Per the documentation, "Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes."
+
+## Sanitizing the Data
+
+```{r include=FALSE}
+na_threshold = 0.7
+```
+
+There are several metadata columns provided in the data that we would first like to remove. We do not want these columns to have an impact on our model.
+
+```{r remove_metadata_columns}
+remove_columns <- grep("^X|user_name|timestamp|window", colnames(dat.training.frame))
+dat.training.frame <- dat.training.frame[, -remove_columns]
+dat.testing.frame <- dat.testing.frame[, -remove_columns]
+rm(remove_columns)
+```
+
+There are several invalid values, including empty strings, and `#DIV/0!` values. These are not useful for classification. Let's write a scrub function to remove these values.
+
+```{r scrub_values}
+scrub_value <- function (x) {
+  if (is.na(x) || x %in% c("", "#DIV/0!")) {
+    NA
+  }
+  else {
+    x
+  }
+}
+scrub_frame <- function (x) {
+  for (col in 1:ncol(x)) {
+    x[, col] <- sapply(x[, col], scrub_value)
+  }
+  x
+}
+dat.training.frame <- scrub_frame(dat.training.frame)
+dat.testing.frame <- scrub_frame(dat.testing.frame)
+```
+
+Finally, let's ensure that all columns, except for the `classe` column, are converted to `numeric` values.
+
+```{r cast_data_as_numeric}
+dat.training.frame$classe <- as.factor(dat.training.frame$classe)
+cast_frame_to_numeric <- function (x) {
+  for (col in colnames(x)) {
+    if (col == "classe" || col == "problem_id") {
+      # skip
+    }
+    else {
+      x[, col] <- as.numeric(x[, col])       
+    }
+  }
+  x
+}
+dat.training.frame <- cast_frame_to_numeric(dat.training.frame)
+dat.testing.frame <- cast_frame_to_numeric(dat.testing.frame)
+```
+
+We wish to remove any columns that are more than `r paste0(na_threshold * 100, "%")` `NA` values. These should not be used as predictors.
+
+```{r remove_na_columns}
+remove_na_columns <- function (x, threshold = na_threshold) {
+  col_count <- ncol(x)
+  row_count <- nrow(x)
+  for (col in colnames(x)) {
+    if (sum(is.na(x[, col])) > threshold * row_count) {
+      x[, col] <- NULL
+    }
+  }
+  print(paste0("Removed ", col_count - ncol(x), " columns."))
+  x
+}
+dat.training.frame <- remove_na_columns(dat.training.frame)
+```
+
+## Creating the Model
+
+```{r before_create, include=FALSE}
+num_folds <- 5
+num_trees <- 200
+```
+
+Split our training data into a training and testing set.
+
+```{r split_data}
+in_train <- createDataPartition(dat.training.frame$classe, p = 0.7, list = FALSE)
+train_data <- dat.training.frame[in_train, ]
+test_data <- dat.training.frame[-in_train, ]
+```
+
+This gives us `r nrow(train_data)` rows in our training set and `r nrow(test_data)` rows in our testing set.
+
+We will create a random forest model with `r num_trees` trees. We are using cross validation for training control, with `r num_folds` folds. Random forests allow for very accurate predictions, at the cost of time.
+
+```{r create_model}
+control_validation <- trainControl(method = "cv", number = num_folds)
+model_rf <- train(classe ~ ., data = train_data, method = "rf",
+                  trControl = control_validation, nTree = num_trees)
+print(model_rf)
+```
+
+```{r predict}
+predict_rf <- predict(model_rf, newdata = test_data)
+conf_mat_rf <- confusionMatrix(test_data$classe, predict_rf)
+print(conf_mat_rf)
+```
+
+Our model, tested against the untrained validation set, is `r paste0(round(conf_mat_rf$overall[1] * 100, 2), "%")` accurate.
+
+```{r predict_test, fig.height=5}
+num_vars <- 10
+varImpPlot(model_rf$finalModel, 
+           main = paste0("Variable Importance Plot (Top ", num_vars, " Variables"),
+           n.var = num_vars)
+```
+
+## Test Results
+
+```{r test_results}
+test_predictions <- predict(model_rf, newdata = dat.testing.frame)
+test_predictions <- data.frame(dat.testing.frame$problem_id, test_predictions)
+colnames(test_predictions) <- c("problem_id", "prediction")
+print(test_predictions)
+```
