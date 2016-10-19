@@ -165,6 +165,16 @@ model_rf <- train(classe ~ ., data = train_data, method = "rf",
 print(model_rf)
 ```
 
+We can also view the final random forest model.
+
+```{r}
+print(model_rf$finalModel)
+model_conf <- model_rf$finalModel$confusion[, -6]
+oob_estimate <- 1 - sum(diag(model_conf)) / sum(model_conf)
+```
+
+The OOB error rate estimate is `r paste0(round(oob_estimate * 100, 2), "%")`.
+
 ```{r predict}
 predict_rf <- predict(model_rf, newdata = test_data)
 conf_mat_rf <- confusionMatrix(test_data$classe, predict_rf)

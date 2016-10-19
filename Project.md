@@ -188,6 +188,38 @@ print(model_rf)
 ## The final value used for the model was mtry = 2.
 ```
 
+We can also view the final random forest model.
+
+
+```r
+print(model_rf$finalModel)
+```
+
+```
+## 
+## Call:
+##  randomForest(x = x, y = y, mtry = param$mtry, nTree = ..1) 
+##                Type of random forest: classification
+##                      Number of trees: 500
+## No. of variables tried at each split: 2
+## 
+##         OOB estimate of  error rate: 0.76%
+## Confusion matrix:
+##      A    B    C    D    E class.error
+## A 3902    3    1    0    0 0.001024066
+## B   15 2636    6    1    0 0.008276900
+## C    0   16 2376    4    0 0.008347245
+## D    0    0   51 2200    1 0.023090586
+## E    0    0    1    6 2518 0.002772277
+```
+
+```r
+model_conf <- model_rf$finalModel$confusion[, -6]
+oob_estimate <- 1 - sum(diag(model_conf)) / sum(model_conf)
+```
+
+The OOB error rate estimate is 0.76%.
+
 
 ```r
 predict_rf <- predict(model_rf, newdata = test_data)
